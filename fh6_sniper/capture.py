@@ -1,4 +1,4 @@
-"""Screen capture and window-focus helpers."""
+"""屏幕捕获和窗口焦点辅助函数。"""
 from __future__ import annotations
 import logging
 import time
@@ -13,17 +13,17 @@ CANON = (1920, 1080)
 
 _camera = None
 _camera_unavailable = False
-_hwnd_cache: dict = {}
+_hwnd_cache: dict[str, int] = {}
 
 
 def find_window(title: str) -> int:
-    """Return the hwnd of a visible window with this title, or 0."""
+    """返回具有指定标题的可见窗口的 hwnd，若未找到则返回 0。"""
     cached = _hwnd_cache.get(title)
     if cached and win32gui.IsWindow(cached):
         return cached
-    matches = []
+    matches: list[int] = []
 
-    def _collect(hwnd, _):
+    def _collect(hwnd: int, _) -> None:
         if win32gui.IsWindowVisible(hwnd):
             if win32gui.GetWindowText(hwnd).strip() == title:
                 matches.append(hwnd)
@@ -35,8 +35,8 @@ def find_window(title: str) -> int:
     return hwnd
 
 
-def client_rect(hwnd: int):
-    """Return (left, top, width, height) of a window's client area."""
+def client_rect(hwnd: int) -> tuple[int, int, int, int]:
+    """返回窗口客户区域的 (left, top, width, height)。"""
     cl, ct, cr, cb = win32gui.GetClientRect(hwnd)
     width, height = cr - cl, cb - ct
     sx, sy = win32gui.ClientToScreen(hwnd, (cl, ct))
@@ -61,7 +61,7 @@ def _grab_dxgi(region):
                 return np.ascontiguousarray(frame)
             time.sleep(0.008)
         return None
-    except Exception:
+    except Exception:  # noqa: BLE001  bettercam 初始化失败则回退
         _camera_unavailable = True
         return None
 
@@ -91,9 +91,8 @@ _ASPECT_EPS = 0.01
 
 
 def _symmetric_strip(near: int, far: int) -> int:
-    """Return the per-side strip if `near` and `far` look like matching bars,
-    else 0. Natural interior dark is asymmetric; real letterbox / pillarbox
-    is centered, so the two edges should agree within tolerance."""
+    """如果 near 和 far 看起来像对称黑边则返回每侧裁剪量，否则返回 0。
+    自然的深色区域不对称；真正的信箱/遮幅黑边是居中的，因此两侧应在容差范围内一致。"""
     if near == 0 and far == 0:
         return 0
     tol = max(5, int(max(near, far) * 0.10))
@@ -102,9 +101,8 @@ def _symmetric_strip(near: int, far: int) -> int:
     return min(near, far)
 
 
-def _detect_strip_box(frame: np.ndarray):
-    """Return (top, bottom, left, right) inner-rect coords for a symmetric
-    black-bar strip, or None if no reliable bar is present."""
+def _detect_strip_box(frame: np.ndarray) -> tuple[int, ...] | None:
+    """返回 (top, bottom, left, right) 内矩形坐标以裁剪对称黑边，若无则返回 None。"""
     if frame.size == 0:
         return None
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -129,8 +127,7 @@ def _detect_strip_box(frame: np.ndarray):
 
 
 def _strip_black_bars(frame: np.ndarray) -> np.ndarray:
-    """Apply the symmetric-bar strip directly. Thin wrapper around
-    `_detect_strip_box` for tests + ad-hoc one-off use."""
+    """直接应用对称黑边裁剪。对测试和单次使用有用的轻量包装。"""
     box = _detect_strip_box(frame)
     if box is None:
         return frame
@@ -138,20 +135,20 @@ def _strip_black_bars(frame: np.ndarray) -> np.ndarray:
     return frame[t:b, l:r]
 
 
-def _detect_aspect_box(h: int, w: int):
-    """Return (top, bottom, left, right) for the largest centered 16:9
-    sub-rect, or None if `(h, w)` already match 16:9 within tolerance."""
+def _detect_aspect_box(h: int, w: int) -> tuple[int, ...] | None:
+    """返回最大居中 16:9 子矩形的 (top, bottom, left, right)，
+    若 (h, w) 已在容差内匹配 16:9 则返回 None。"""
     if h == 0 or w == 0:
         return None
     target = CANON[0] / CANON[1]                     # 16/9
     current = w / h
     if abs(current - target) <= _ASPECT_EPS:
         return None
-    if current > target:                             # frame is too wide
+    if current > target:                             # 画面过宽
         crop_w = int(round(h * target))
         x = (w - crop_w) // 2
         return (0, h, x, x + crop_w)
-    crop_h = int(round(w / target))                  # frame is too tall
+    crop_h = int(round(w / target))                  # 画面过高
     y = (h - crop_h) // 2
     return (y, y + crop_h, 0, w)
 
@@ -182,16 +179,15 @@ def _build_plan(frame: np.ndarray) -> dict:
 
 
 def reset_normalize_plan() -> None:
-    """Drop the cached plan so the next normalize_frame call re-detects.
-    Call this whenever the capture region or game settings change (e.g.
-    when the user hits Start)."""
+    """丢弃缓存的规范化计划，使下一次 normalize_frame 重新检测。
+    当捕获区域或游戏设置改变时调用（例如用户点击开始时）。"""
     global _plan
     _plan = None
 
 
 def normalize_frame(frame: np.ndarray) -> np.ndarray:
-    """Apply the cached strip / 16:9 crop / 1080p resize plan; build the
-    plan from this frame if none is cached yet or the input shape changed."""
+    """应用缓存的黑边裁剪 / 16:9 裁剪 / 1080p 缩放计划；
+    若尚无可用的计划或输入形状改变，则根据此帧构建计划。"""
     global _plan
     if frame is None or frame.size == 0:
         return np.zeros((CANON[1], CANON[0], 3), dtype=np.uint8)
@@ -218,8 +214,8 @@ def normalize_frame(frame: np.ndarray) -> np.ndarray:
 
 
 def grab_screen(window_title: str | None = None) -> np.ndarray:
-    """Capture a BGR 1920x1080 frame. Falls back to mss on DXGI failure;
-    returns a blank frame if both backends fail."""
+    """捕获 BGR 1920x1080 帧。DXGI 失败时回退到 mss；
+    若两个后端都失败则返回空白帧。"""
     global _capture_failing
     region = None
     if window_title:
@@ -232,15 +228,15 @@ def grab_screen(window_title: str | None = None) -> np.ndarray:
     if frame is None:
         try:
             frame = _grab_mss(region)
-        except Exception as e:
+        except Exception:  # noqa: BLE001  MSS 也失败
             if not _capture_failing:
-                _log.warning("capture failed: %s", e)
+                _log.warning("捕获失败")
                 _capture_failing = True
             frame = None
     if frame is None:
         return np.zeros((CANON[1], CANON[0], 3), dtype=np.uint8)
     if _capture_failing:
-        _log.info("capture recovered")
+        _log.info("捕获已恢复")
         _capture_failing = False
     return normalize_frame(frame)
 
@@ -249,12 +245,13 @@ def foreground_title() -> str:
     return win32gui.GetWindowText(win32gui.GetForegroundWindow())
 
 
-def is_game_focused(expected_title: str, title_getter=foreground_title) -> bool:
+def is_game_focused(expected_title: str,
+                    title_getter=foreground_title) -> bool:
     return title_getter().strip() == expected_title
 
 
 def focus_window(title: str) -> bool:
-    """Bring the named window to the foreground. Returns True on success."""
+    """将指定窗口置于前台。成功返回 True。"""
     hwnd = find_window(title)
     if not hwnd:
         return False
@@ -263,5 +260,5 @@ def focus_window(title: str) -> bool:
             win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
         win32gui.SetForegroundWindow(hwnd)
         return True
-    except Exception:
+    except Exception:  # noqa: BLE001  SetForegroundWindow 可能失败
         return False

@@ -1,31 +1,31 @@
-"""Sniper state machine and the GameIO wrapper used by tests."""
+"""狙击状态机和测试用的 GameIO 包装。"""
 from __future__ import annotations
 import logging
 import random
 import time
+from collections.abc import Callable
 from . import actions, capture, paths, vision
-from .config import save_config
+from .config import Config, save_config
 from .vision import Screen
 
 log = logging.getLogger("fh6.sniper")
 
 
-def _names(screens) -> str:
+def _names(screens: set) -> str:
     return "{" + ", ".join(sorted(s.name for s in screens)) + "}"
 
 
 class GameIO:
-    """Glue between capture + vision + input. Swappable for testing."""
+    """连接捕获 + 视觉 + 输入的胶水层。可替换以进行测试。"""
 
-    def __init__(self, cfg, templates):
+    def __init__(self, cfg: Config, templates: dict):
         self.cfg = cfg
         self.templates = templates
         self._last_screen = None
 
-    def screen(self, targets=None) -> Screen:
-        """Identify the current screen. If `targets` is a set of Screen,
-        only those (plus the priority results templates and the last-known
-        screen) are matched."""
+    def screen(self, targets: set[Screen] | None = None) -> Screen:
+        """识别当前画面。如果 `targets` 是 Screen 集合，
+        则仅匹配这些（加上优先结果模板和上次已知画面）。"""
         if (targets is not None and self._last_screen is not None
                 and self._last_screen != Screen.UNKNOWN):
             targets = targets | {self._last_screen}
@@ -38,6 +38,7 @@ class GameIO:
         return result
 
     def focused(self) -> bool:
+        """检查 FH6 窗口是否为前景窗口。"""
         return capture.is_game_focused(self.cfg.window_title)
 
     def confirm_highlighted(self) -> bool:
@@ -54,22 +55,25 @@ class GameIO:
         return vision.first_buyable_slot(frame)
 
     def slot_states(self) -> tuple:
-        """Per-slot (sold, populated) flags. Used by the render-wait gate."""
+        """每个插槽的（已售，有卡片）标志。用于渲染等待门控。"""
         frame = capture.grab_screen(self.cfg.window_title)
         return vision.slot_states(frame)
 
     def press(self, name: str, times: int = 1) -> None:
-        log.info("press %s%s", name, f" x{times}" if times > 1 else "")
+        log.info("按键 %s%s", name, f" x{times}" if times > 1 else "")
         actions.tap_key(name, times,
                         self.cfg.key_hold_ms, self.cfg.between_keys_ms,
                         use_win32=self.cfg.win32_api_input)
 
 
 class Sniper:
-    """Drives the auction house loop through a GameIO."""
+    """通过 GameIO 驱动拍卖行循环。"""
 
-    def __init__(self, io, cfg, clock=time.monotonic, sleeper=time.sleep,
-                 on_purchase=None, on_status=None, on_stats=None):
+    def __init__(self, io: GameIO, cfg: Config,
+                 clock=time.monotonic, sleeper=time.sleep,
+                 on_purchase: Callable | None = None,
+                 on_status: Callable | None = None,
+                 on_stats: Callable | None = None):
         self.io = io
         self.cfg = cfg
         self.clock = clock
@@ -82,15 +86,13 @@ class Sniper:
         self.failed_buyouts = 0
         self.started_at = None
         self._stop = False
-        # One-shot guard for the auto BG-toggle recovery. The buy_out and
-        # buy_out_progress templates are the only BG-sensitive ones; when
-        # the wait for the confirm dialog times out we flip the flag,
-        # reload templates, retry once, and never auto-toggle again this
-        # session even if the second attempt also fails.
+        # 一键式自动切换 BG 恢复保护。buy_out 和 buy_out_progress
+        # 是唯一 BG 敏感的模板；当等待确认对话框超时时我们翻转标志，
+        # 重新加载模板，重试一次，此后即使第二次尝试也失败也不再自动切换。
         self._auto_bg_toggled = False
-        # True once we have identified ANY known screen this session.
-        # A recover_failed while still False usually means the game
-        # language isn't English (templates only match the English UI).
+        # 一旦本会话中识别到任何已知画面即为 True。
+        # 尚未 _oriented 时的 recover_failed 通常意味着游戏语言不是英文
+        # （模板只匹配英文界面）。
         self._oriented = False
 
     def request_stop(self) -> None:
@@ -111,35 +113,32 @@ class Sniper:
         self.sleeper(random.uniform(lo, hi) / 1000.0)
 
     def _guard_focus(self) -> None:
-        """Block until FH6 is the foreground window. Sets the Paused status
-        once on entry, not on every tick."""
+        """阻塞直到 FH6 是前景窗口。进入时设置一次「已暂停」状态，而非每次滴答。"""
         if self.cfg.win32_api_input:
             return
         if self.io.focused():
             return
-        self._status("Paused: FH6 not focused")
+        self._status("已暂停：FH6 未聚焦")
         while not self.io.focused():
             if self._stop:
                 return
             self.sleeper(0.5)
 
     def _press(self, name: str, times: int = 1) -> None:
-        """Send a keypress, but only while FH6 has focus."""
+        """发送按键，但仅在 FH6 有焦点时。"""
         self._guard_focus()
         if self._stop:
             return
         self.io.press(name, times)
 
     def _wait_for_populated_slots(self, timeout: float) -> bool:
-        """Block up to `timeout` for FH6 to render at least one card.
+        """阻塞等待 `timeout` 秒，直到 FH6 渲染出至少一张卡片。
 
-        The RESULTS_HAS_CARS lime banner appears a frame or two before the
-        card UI is fully drawn. first_buyable_slot called on that earlier
-        frame finds zero populated slots and falsely reports 'all sold'.
-        Polls slot_states tightly between iterations (5ms breather, not
-        the global poll cadence) since the wait only runs on the results
-        page and is short-lived. Returns True once a populated slot is
-        seen, False on timeout (caller should still proceed)."""
+        RESULTS_HAS_CARS 青绿色横幅比卡片 UI 完全绘制早 1-2 帧出现。
+        如果在较早帧上调用 first_buyable_slot，会发现零个有效插槽并错误报告"全部已售"。
+        在迭代之间紧密轮询 slot_states（5ms 间隔，非全局轮询节奏），
+        因为此等待只在结果页面上运行且持续时间短。
+        一旦看到有效插槽返回 True，超时返回 False（调用者仍应继续）。"""
         deadline = self.clock() + timeout
         while self.clock() < deadline:
             if self._stop:
@@ -147,29 +146,24 @@ class Sniper:
             for _sold, populated in self.io.slot_states():
                 if populated:
                     return True
-            # 5ms breather: keeps capture work from saturating one core in
-            # the tight loop, and gives the FakeClock-based tests a way to
-            # advance their virtual clock so the timeout fires deterministically.
+            # 5ms 间隔：防止紧密循环使单核饱和，并为基于 FakeClock 的测试
+            # 提供推进虚拟时钟的方式，使超时确定性地触发。
             self.sleeper(0.005)
-        log.info("populated wait timed out after %.1fs", timeout)
+        log.info("等待有效插槽超时（%.1fs）", timeout)
         return False
 
     def _try_toggle_moving_background(self) -> bool:
-        """Auto-toggle moving_background after verifying the other variant
-        actually matches the current frame.
+        """验证备用变体确实匹配当前帧后，自动切换 moving_background。
 
-        Fires when the buy_out wait_for has timed out. The buy_out and
-        buy_out_progress templates are the only BG-sensitive ones, but a
-        timeout can also be caused by a slow render or transient hiccup -
-        not always a BG mismatch. To avoid corrupting the user's config
-        on those false alarms, this loads the opposite-flag templates and
-        runs identify_screen against a fresh frame. Only commits the swap
-        (replace io.templates, save config, set one-shot guard) when the
-        alternate variant actually identifies BUY_OUT or PLAYER_OPTIONS.
+        在 buy_out wait_for 超时时触发。buy_out 和 buy_out_progress
+        是唯一 BG 敏感的模板，但超时也可能由缓慢渲染或瞬态问题引起——
+        不总是 BG 不匹配。为避免在这些误报上损坏用户配置，
+        本方法加载相反标志的模板并针对新帧运行 identify_screen。
+        仅当备用变体确实识别出 BUY_OUT 或 PLAYER_OPTIONS 时才提交切换
+        （替换 io.templates、保存配置、设置一次性保护）。
 
-        Returns True if the swap committed (caller should retry the wait);
-        False if already attempted this session OR the alternate variant
-        also doesn't match (in which case fall through to recovery)."""
+        如果提交了切换（调用者应重试等待）则返回 True；
+        如果本会话已尝试过或备用变体也不匹配则返回 False（此时回退到恢复）。"""
         if self._auto_bg_toggled:
             return False
         cfg = self.cfg
@@ -178,34 +172,31 @@ class Sniper:
             candidate = vision.load_templates(
                 paths.app_dir() / cfg.template_dir,
                 moving_background=new_value)
-        except Exception:
-            log.exception("auto-toggle: failed to load alternate templates")
+        except Exception:  # noqa: BLE001  失败时跳过自动切换
+            log.exception("自动切换：加载备用模板失败")
             return False
         frame = capture.grab_screen(cfg.window_title)
         result = vision.identify_screen(
             frame, candidate, cfg.match_threshold,
             targets={Screen.BUY_OUT, Screen.PLAYER_OPTIONS})
         if result not in (Screen.BUY_OUT, Screen.PLAYER_OPTIONS):
-            log.info("auto-toggle skipped: alternate variant also doesn't "
-                     "match - timeout not caused by BG mismatch")
+            log.info("自动切换：备用变体同样不匹配 — 超时非 BG 不匹配导致")
             return False
         self.io.templates = candidate
         cfg.moving_background = new_value
         try:
             save_config(cfg, paths.app_dir() / "config.json")
-        except Exception:
-            log.exception("auto-toggle: save_config failed (runtime swap "
-                          "stays, persistence didn't)")
+        except Exception:  # noqa: BLE001  持久化失败但运行时切换保留
+            log.exception("自动切换：save_config 失败（运行时切换保留，持久化未执行）")
         self._auto_bg_toggled = True
-        log.info("auto-toggle moving_background -> %s "
-                 "(verified against frame; templates swapped, "
-                 "saved to config.json)", new_value)
-        self._status(f"Auto-toggled moving background -> {new_value}")
+        log.info("自动切换移动背景 -> %s "
+                 "（已验证帧；模板已切换，已保存至 config.json）", new_value)
+        self._status(f"已自动切换移动背景 -> {new_value}")
         return True
 
-    def wait_for(self, screens: set, timeout: float):
-        """Poll until the current screen is in `screens`, or timeout. Time
-        spent in _guard_focus does not count toward the timeout."""
+    def wait_for(self, screens: set, timeout: float) -> Screen | None:
+        """轮询直到当前画面在 `screens` 中，或超时。
+        在 _guard_focus 中花费的时间不计入超时。"""
         deadline = self.clock() + timeout
         while self.clock() < deadline:
             if self._stop:
@@ -220,14 +211,14 @@ class Sniper:
                 log.info("wait_for %s -> %s", _names(screens), current.name)
                 return current
             self._poll_delay()
-        log.info("wait_for %s -> TIMEOUT after %.0fs", _names(screens), timeout)
+        log.info("wait_for %s -> 超时（%.0fs）", _names(screens), timeout)
         return None
 
-    def _press_until(self, key, from_screen, targets,
+    def _press_until(self, key: str, from_screen, targets: set,
                      settle: float = 0.7, reach: float = 8.0,
-                     attempts: int = 4):
-        """Press `key` until a target screen is reached. If the screen has
-        not left `from_screen` within `settle`, retry the press."""
+                     attempts: int = 4) -> Screen | None:
+        """按下 `key` 直到到达目标画面。如果画面未在 `settle` 内离开
+        `from_screen`，则重试按键。"""
         inner_targets = targets | {from_screen}
         for _ in range(attempts):
             if self._stop:
@@ -246,7 +237,7 @@ class Sniper:
         return None
 
     def _goto_search_config(self) -> bool:
-        """Get to the Search config screen. Returns success."""
+        """到达搜索配置画面。返回是否成功。"""
         s = self.io.screen()
         for _ in range(10):
             if self._stop:
@@ -265,20 +256,20 @@ class Sniper:
             self._press("esc")
             s = self._await_settle(prev=s)
         if self._oriented:
-            self._status("Lost: start the bot in the Auction House")
+            self._status("无法定位：请在拍卖行中启动机器人")
         else:
-            self._status("Lost: set game language to English")
+            self._status("无法定位：请将游戏语言设置为英文")
         return False
 
-    def _enter_search_from_landing(self, known=None) -> bool:
-        """From the AH landing menu, open Search Auctions."""
-        self._status("Opening Search Auctions")
+    def _enter_search_from_landing(self, known: Screen | None = None) -> bool:
+        """从拍卖行首页菜单打开搜索拍卖。"""
+        self._status("正在打开搜索拍卖")
         for attempt in range(1, 5):
             if self._stop:
                 return False
             s = known if known is not None else self.io.screen()
             known = None
-            log.info("enter_search attempt %d: screen=%s", attempt, s.name)
+            log.info("enter_search 尝试 %d：screen=%s", attempt, s.name)
             if s == Screen.SEARCH_CONFIG:
                 return True
             if s == Screen.UNKNOWN:
@@ -288,17 +279,16 @@ class Sniper:
                 self._press("esc")
                 self.sleeper(0.3)
                 continue
-            # Landing menu takes a moment to become input-ready; this delay
-            # stops the first Enter being dropped.
+            # 首页菜单需要片刻才能准备好接收输入；此延迟防止首个 Enter 被丢弃。
             self.sleeper(0.2)
             self._press("enter")
             if self.wait_for({Screen.SEARCH_CONFIG}, 0.9) is not None:
                 return True
-        log.info("enter_search: gave up after 4 attempts")
+        log.info("enter_search：4 次尝试后放弃")
         return False
 
     def _navigate_to_confirm(self) -> bool:
-        """Press Down until the Confirm button is highlighted."""
+        """按向下键直到确认按钮高亮。"""
         for _ in range(12):
             if self._stop:
                 return False
@@ -308,15 +298,13 @@ class Sniper:
         return self.io.confirm_highlighted()
 
     def _recover(self) -> str:
-        """ESC out toward Search config or AH landing.
+        """按 ESC 退回到搜索配置或拍卖行首页。
 
-        Avoids ESCing from a single UNKNOWN frame (could be a mid-transition
-        flicker), but ESCs after the screen has been persistently UNKNOWN.
-        Persistent UNKNOWN usually means we're on a popup with no template
-        (e.g. the Place Bid dialog) and need to back out. ESC only ever
-        closes popups, never confirms anything.
-        """
-        self._status("Recovering")
+        避免在单个 UNKNOWN 帧上按 ESC（可能是过渡闪烁），
+        但在画面持续 UNKNOWN 后按 ESC。持续的 UNKNOWN 通常意味着
+        我们处于没有模板的弹出窗口（例如「出价」对话框）需要退出。
+        ESC 只关闭弹出窗口，从不确认任何内容。"""
+        self._status("正在恢复")
         s = self.io.screen()
         unknown_streak = 0
         for _ in range(10):
@@ -326,7 +314,7 @@ class Sniper:
                 return "recovered"
             if s == Screen.UNKNOWN:
                 unknown_streak += 1
-                if unknown_streak >= 4:           # ~1.2s of stuck UNKNOWN
+                if unknown_streak >= 4:           # 约 1.2s 卡在 UNKNOWN
                     self._press("esc")
                     unknown_streak = 0
                     s = self._await_settle(prev=s)
@@ -337,12 +325,11 @@ class Sniper:
             unknown_streak = 0
             self._press("esc")
             s = self._await_settle(prev=s)
-        log.info("recover: gave up")
+        log.info("恢复：放弃")
         return "recover_failed"
 
-    def _await_settle(self, prev, timeout: float = 1.2):
-        """Poll until the screen settles to a recognised state other than
-        `prev`, or timeout. Used right after an ESC."""
+    def _await_settle(self, prev: Screen, timeout: float = 1.2) -> Screen:
+        """等待画面稳定到一个已知状态（不同于 `prev`），或超时。通常在 ESC 后使用。"""
         deadline = self.clock() + timeout
         while self.clock() < deadline:
             if self._stop:
@@ -353,8 +340,8 @@ class Sniper:
                 return s
         return Screen.UNKNOWN
 
-    def _back_to_landing(self, known=None) -> None:
-        """ESC out to the AH landing menu, however many screens deep."""
+    def _back_to_landing(self, known: Screen | None = None) -> None:
+        """按 ESC 退回到拍卖行首页菜单，无论当前在几层深。"""
         s = known if known is not None else self.io.screen()
         for _ in range(6):
             if self._stop:
@@ -369,13 +356,12 @@ class Sniper:
             s = self._await_settle(prev=s)
 
     def _escape_player_options(self) -> str:
-        """ESC out of the Player Options menu a sold car can open. ESCs
-        even from UNKNOWN screens; stops at AH_LANDING.
+        """从已售车辆可能打开的玩家选项菜单中 ESC 退出。
+        即使画面为 UNKNOWN 也会按 ESC；停在 AH_LANDING。
 
-        Returns "no_cars" - the car was sold before we could snipe it,
-        which is a missed-search, not a failed buyout.
-        """
-        self._status("Listing already sold, skipping")
+        返回 "no_cars" —— 车辆在我们狙击前已被售出，
+        这算作一次错过的搜索，而非失败的购买。"""
+        self._status("列表已售罄，跳过")
         for _ in range(6):
             if self._stop:
                 return "recover_failed"
@@ -385,23 +371,21 @@ class Sniper:
             self.sleeper(0.6)
         return "no_cars"
 
-    def _confirm_yes(self):
-        """Press Yes on the BUY_OUT confirm dialog and observe the screen.
+    def _confirm_yes(self) -> Screen | None:
+        """在购买确认对话框上按「是」并观察画面。
 
-        State machine:
-        - **BUY_OUT** (confirm still showing): Enter was dropped, re-press.
-        - **BUYOUT_PROGRESS**: request in flight, slow polling, wait outcome.
-        - **BUYOUT_SUCCESS / BUYOUT_FAILED**: done.
-        - **UNKNOWN**: keep polling briefly, then bail (likely a popup we
-          don't have a template for, e.g. Place Bid from a dropped Down).
+        状态机：
+        - **BUY_OUT**（确认仍在显示）：Enter 被丢弃，重新按下。
+        - **BUYOUT_PROGRESS**：请求已发送，慢速轮询，等待结果。
+        - **BUYOUT_SUCCESS / BUYOUT_FAILED**：完成。
+        - **UNKNOWN**：短暂继续轮询，然后放弃（可能是我们没有模板的弹出窗口，
+          例如因为 Down 键丢失而出现的「出价」对话框）。
 
-        Initial budget is 5s - keeps polling bounded if we never see any
-        recognisable buyout screen. Bumps to `cfg.timeout_outcome_s` once
-        we know the request is in flight (BUYOUT_PROGRESS).
-        """
+        初始预算 5s —— 如果从未看到任何可识别的购买画面，则限制轮询时间。
+        一旦知道请求已发送（BUYOUT_PROGRESS），延长至 `cfg.timeout_outcome_s`。"""
         cfg = self.cfg
         self._press("enter")
-        deadline = self.clock() + 5.0          # initial: 5s to see something
+        deadline = self.clock() + 5.0          # 初始：5s 等待看到某些内容
         in_flight = False
         enter_attempts = 1
         targets = {Screen.BUY_OUT, Screen.BUYOUT_PROGRESS,
@@ -424,15 +408,15 @@ class Sniper:
                 in_flight = True
                 deadline = self.clock() + cfg.timeout_outcome_s
             if in_flight:
-                self.sleeper(0.2)              # 5 Hz - request is in flight, calm
+                self.sleeper(0.2)              # 5 Hz - 请求已发送，慢速轮询
             else:
-                self._poll_delay()             # ~15 Hz - still figuring out state
+                self._poll_delay()             # ~15 Hz - 仍在确定状态
         return None
 
     def _collect(self) -> None:
-        """Collect a won car. The Claim Car popup has two stages that both
-        read as CLAIM_CAR; press Enter until the screen leaves it."""
-        self._status("Collecting car")
+        """收取赢得的车辆。「领取车辆」弹窗有两个阶段，都识别为 CLAIM_CAR；
+        按回车直到画面离开它。"""
+        self._status("正在收取车辆")
         if self._press_until("y", Screen.RESULTS_HAS_CARS,
                              {Screen.AUCTION_OPTIONS}) is None:
             return
@@ -453,16 +437,16 @@ class Sniper:
                 return
 
     def run_once(self) -> str:
-        """One snipe attempt.
+        """一次狙击尝试。
 
-        Returns: bought | failed | no_cars | recovered | recover_failed.
+        返回: bought | failed | no_cars | recovered | recover_failed.
         """
         log.info("--- run_once ---")
         cfg = self.cfg
         if not self._goto_search_config():
             return "recover_failed"
 
-        self._status("Searching")
+        self._status("正在搜索")
         if not self._navigate_to_confirm():
             return self._recover()
         result = self._press_until(
@@ -473,24 +457,24 @@ class Sniper:
             self._back_to_landing(known=result)
             return "no_cars"
 
-        # The RESULTS_HAS_CARS banner renders before the card UI itself.
-        # Wait for at least one populated card before checking slot state,
-        # otherwise first_buyable_slot returns 0 on an unrendered frame and
-        # the bot falsely reports 'all sold'.
+        # RESULTS_HAS_CARS 横幅在卡片 UI 本身之前渲染。
+        # 在检查插槽状态前等待至少一张有内容的卡片，
+        # 否则 first_buyable_slot 在未渲染的帧上返回 0，
+        # 机器人会错误报告"全部已售"。
         self._wait_for_populated_slots(1.5)
 
         slot = self.io.first_buyable_slot()
         if slot == 0:
-            self._status("All listings sold, skipping")
+            self._status("所有列表已售罄，跳过")
             self._back_to_landing(known=result)
             return "no_cars"
 
-        self._status("Car found, buying out")
+        self._status("找到车辆，正在购买")
         for _ in range(slot - 1):
             self._press("down")
 
         if slot > 1 and self.io.first_buyable_slot() != slot:
-            self._status("Listing sold during navigation, skipping")
+            self._status("导航期间列表已售出，跳过")
             self._back_to_landing(known=result)
             return "no_cars"
 
@@ -502,16 +486,15 @@ class Sniper:
         if seen is None:
             return self._recover()
 
-        # Don't retry down+enter. A dropped Down leaves Place Bid
-        # highlighted, so a retried Enter would bid credits.
+        # 不重试 down+enter。丢失的 Down 会使「出价」高亮，
+        # 因此重试的 Enter 可能会出价。
         self._press("down")
         if cfg.buyout_select_delay_ms:
             self.sleeper(cfg.buyout_select_delay_ms / 1000.0)
         self._press("enter")
-        # Tight 1.0s wait: typical BUY_OUT dialog render is 200-400ms so
-        # 1.0s is ~3x margin while shaving 1.5s off the wasted time
-        # whenever the moving_background flag is wrong and the templates
-        # never match.
+        # 紧凑的 1.0s 等待：典型 BUY_OUT 对话框渲染时间为 200-400ms，
+        # 因此 1.0s 约 3 倍余量，同时在 moving_background 标志错误
+        # 且模板从不匹配时削减 1.5s 的浪费时间。
         seen = self.wait_for({Screen.BUY_OUT, Screen.PLAYER_OPTIONS}, 1.0)
         if seen == Screen.PLAYER_OPTIONS:
             return self._escape_player_options()
@@ -527,7 +510,7 @@ class Sniper:
         if outcome is None:
             return self._recover()
 
-        self._press("enter")            # dismiss the outcome popup
+        self._press("enter")            # 关闭结果弹出窗口
 
         if outcome == Screen.BUYOUT_FAILED:
             self._back_to_landing()
@@ -548,40 +531,40 @@ class Sniper:
         return elapsed_min >= cfg.max_minutes
 
     def run(self) -> str:
-        """Loop snipe attempts until stopped or an auto-stop limit hits.
+        """循环狙击尝试，直到停止或满足自动停止条件。
 
-        Returns: stopped | auto_stop | recover_failed.
+        返回: stopped | auto_stop | recover_failed.
         """
         self.started_at = self.clock()
-        log.info("=== sniper started ===")
-        self._status("Running")
+        log.info("=== 狙击开始 ===")
+        self._status("运行中")
         while not self._stop:
             if self._auto_stop_reached():
-                self._status("Auto-stop limit reached")
+                self._status("自动停止条件已满足")
                 return "auto_stop"
             self._guard_focus()
             if self._stop:
                 break
             t0 = self.clock()
             outcome = self.run_once()
-            log.info("run_once outcome: %s", outcome)
+            log.info("run_once 结果: %s", outcome)
             self.searches += 1
             if outcome == "recover_failed":
                 self._emit_stats()
                 if self._oriented:
-                    self._status("Stopped: could not recover")
+                    self._status("已停止：无法恢复")
                 else:
-                    self._status("Stopped: set game language to English")
+                    self._status("已停止：请将游戏语言设置为英文")
                 return "recover_failed"
             if outcome == "failed":
                 self.failed_buyouts += 1
             if outcome == "bought":
                 self.cars_bought += 1
                 loop_s = self.clock() - t0
-                self._status(f"Bought {self.cars_bought} car(s)")
+                self._status(f"已购 {self.cars_bought} 辆车")
                 if self.on_purchase:
                     self.on_purchase(loop_s, self.cars_bought)
             self._emit_stats()
             self.sleeper(self.cfg.loop_pace_s)
-        self._status("Stopped")
+        self._status("已停止")
         return "stopped"

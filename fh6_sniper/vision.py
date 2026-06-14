@@ -1,4 +1,4 @@
-"""Screen identification: OpenCV template matching and HSV colour masks."""
+"""屏幕识别：OpenCV 模板匹配和 HSV 颜色掩码。"""
 from __future__ import annotations
 from enum import Enum, auto
 from pathlib import Path
@@ -40,13 +40,15 @@ TEMPLATE_SCREENS: dict[str, Screen] = {
 }
 
 
-def lime_mask(bgr: np.ndarray, lower, upper) -> np.ndarray:
+def lime_mask(bgr: np.ndarray, lower: tuple, upper: tuple) -> np.ndarray:
+    """根据 HSV 范围生成青绿色掩码。"""
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     return cv2.inRange(hsv, np.array(lower, np.uint8), np.array(upper, np.uint8))
 
 
-def largest_lime_bbox(bgr, lower, upper):
-    """Bounding box of the largest banner-shaped lime region, or None."""
+def largest_lime_bbox(bgr: np.ndarray, lower: tuple,
+                       upper: tuple) -> tuple | None:
+    """最大横幅状青绿色区域的外接矩形，若无则返回 None。"""
     mask = lime_mask(bgr, lower, upper)
     contours, _ = cv2.findContours(
         mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -57,7 +59,7 @@ def largest_lime_bbox(bgr, lower, upper):
         if area < 2000:
             continue
         x, y, w, h = cv2.boundingRect(c)
-        if h <= 0 or w / h < 4.0:        # not banner-shaped
+        if h <= 0 or w / h < 4.0:        # 非横幅形状
             continue
         if area > best_area:
             best_area = area
@@ -72,7 +74,7 @@ def _gray(img: np.ndarray) -> np.ndarray:
 
 
 def match_template(scene: np.ndarray, template: np.ndarray) -> float:
-    """Best NCC score of template inside scene. 0.0 if template is too big."""
+    """模板在场景中的最佳 NCC 匹配分数。若模板过大则返回 0.0。"""
     s, t = _gray(scene), _gray(template)
     if t.shape[0] > s.shape[0] or t.shape[1] > s.shape[1]:
         return 0.0
@@ -93,13 +95,13 @@ def _small(tmpl: np.ndarray) -> np.ndarray:
     return cached
 
 
-def load_templates(template_dir, moving_background: bool = True) -> dict:
-    """Load every detection template as grayscale. Raises if any is missing.
+def load_templates(template_dir: str | Path,
+                   moving_background: bool = True) -> dict:
+    """加载所有检测模板（灰度图）。若任何模板缺失则抛出异常。
 
-    `moving_background` selects which buy_out body template set to load:
-    True (default) uses the BG-on variants, False uses the *_bgoff variants.
-    Skipping the other set saves a couple of full-res matches per buyout
-    poll.
+    `moving_background` 选择加载哪组购买主体模板：
+    True（默认）使用 BG-on 变体，False 使用 *_bgoff 变体。
+    跳过另一组可为每次购买轮询节省几次全分辨率匹配。
     """
     out = {}
     for name in TEMPLATE_SCREENS:
@@ -111,7 +113,7 @@ def load_templates(template_dir, moving_background: bool = True) -> dict:
         path = Path(template_dir) / name
         img = cv2.imread(str(path))
         if img is None:
-            raise FileNotFoundError(f"template missing: {path}")
+            raise FileNotFoundError(f"模板缺失: {path}")
         gray = _gray(img)
         out[name] = gray
         _DOWNSCALED_TEMPLATES[id(gray)] = _downscale(gray)
@@ -119,7 +121,7 @@ def load_templates(template_dir, moving_background: bool = True) -> dict:
 
 
 def _has_bgoff_variant(name: str) -> bool:
-    """True if this template has a *_bgoff sibling registered."""
+    """如果此模板有注册的 *_bgoff 兄弟文件则返回 True。"""
     if name.endswith("_bgoff.png"):
         return False
     sibling = name[:-len(".png")] + "_bgoff.png"
@@ -139,7 +141,7 @@ def _downscale(img: np.ndarray) -> np.ndarray:
 
 
 # Where each template appears on a 1920x1080 frame, with padding.
-TEMPLATE_REGIONS = {
+TEMPLATE_REGIONS: dict[str, tuple] = {
     "search.png":             (472, 223, 1448, 471),
     "auction_details.png":    (889,  64, 1920, 294),
     "no_auctions.png":        (1113, 434, 1706, 690),
@@ -157,27 +159,27 @@ TEMPLATE_REGIONS = {
 }
 
 
-# Templates that must be matched at full resolution. The buy_out body and
-# buy_out_progress body are short text-band crops; half-res blurs the text
-# enough that live frames drop below the 0.80 threshold (~0.78 vs ~0.86).
+# 必须以全分辨率匹配的模板。
+# 购买主体和购买进度主体是短文本带裁剪；半分辨率会使文本模糊，
+# 导致实时帧低于 0.80 阈值（~0.78 vs ~0.86）。
 _FULL_RES_TEMPLATES = {
     "buy_out.png", "buy_out_bgoff.png",
     "buy_out_progress.png", "buy_out_progress_bgoff.png",
 }
 
 
-def screen_scores(scene_bgr, templates: dict, targets=None) -> dict:
-    """Match score per template, region-cropped. Most templates run at half
-    resolution; a few small text-band templates (see _FULL_RES_TEMPLATES)
-    run at full res. If `targets` is a set of Screen, only those templates
-    (plus the priority results templates) are scored."""
+def screen_scores(scene_bgr: np.ndarray, templates: dict,
+                   targets: set[Screen] | None = None) -> dict[str, float]:
+    """每个模板的匹配分数，按区域裁剪。大部分模板以半分辨率运行；
+    少数小文本带模板（见 _FULL_RES_TEMPLATES）以全分辨率运行。
+    若 `targets` 是 Screen 集合，则仅评分这些模板（加上优先结果模板）。"""
     if targets is not None:
         wanted = set(_RESULTS_PRIORITY)
         wanted |= {n for n, scr in TEMPLATE_SCREENS.items() if scr in targets}
         templates = {n: t for n, t in templates.items() if n in wanted}
     gray = _gray(scene_bgr)
     h, w = gray.shape[:2]
-    scores = {}
+    scores: dict[str, float] = {}
     for name, tmpl in templates.items():
         region = TEMPLATE_REGIONS.get(name)
         if region:
@@ -192,9 +194,10 @@ def screen_scores(scene_bgr, templates: dict, targets=None) -> dict:
     return scores
 
 
-def identify_screen(scene_bgr, templates: dict, threshold: float,
-                    targets=None) -> Screen:
-    """Best-matching Screen above `threshold`, or UNKNOWN."""
+def identify_screen(scene_bgr: np.ndarray, templates: dict,
+                     threshold: float,
+                     targets: set[Screen] | None = None) -> Screen:
+    """返回高于 `threshold` 的最佳匹配 Screen，若无则返回 UNKNOWN。"""
     scores = screen_scores(scene_bgr, templates, targets=targets)
     for name in _RESULTS_PRIORITY:
         if scores.get(name, 0.0) >= threshold:
@@ -206,12 +209,14 @@ def identify_screen(scene_bgr, templates: dict, threshold: float,
     return best_screen
 
 
-# Search-config Confirm button band at 1920x1080.
+# 搜索配置界面的确认按钮区域（1920x1080）。
 CONFIRM_ROW = (548, 714, 1372, 772)
 
 
-def is_confirm_highlighted(scene_bgr, lower, upper, region=CONFIRM_ROW) -> bool:
-    """True if the Confirm button shows the lime highlight."""
+def is_confirm_highlighted(scene_bgr: np.ndarray, lower: tuple,
+                            upper: tuple,
+                            region: tuple = CONFIRM_ROW) -> bool:
+    """如果确认按钮显示青绿色高亮则返回 True。"""
     x1, y1, x2, y2 = region
     crop = scene_bgr[y1:y2, x1:x2]
     if crop.size == 0:
@@ -220,8 +225,8 @@ def is_confirm_highlighted(scene_bgr, lower, upper, region=CONFIRM_ROW) -> bool:
     return int(cv2.countNonZero(mask)) > 300
 
 
-# Yellow SOLD stamp HSV range and per-slot regions. Cards stack at a 202px
-# pitch; regions stop above the live time-left pill and the price-row icons.
+# 黄色「已售」印章 HSV 范围和每个插槽的区域。卡片以 202px 间距排列；
+# 区域停在实时剩余时间标签和价格行图标上方。
 SOLD_HSV_LOWER = (20, 120, 120)
 SOLD_HSV_UPPER = (34, 255, 255)
 SOLD_STAMP_REGION = (90, 185, 300, 295)
@@ -233,11 +238,12 @@ SOLD_STAMP_REGION = (90, 185, 300, 295)
 # clean separator that works whether moving_background is on or off.
 SLOT_POPULATED_WHITE_V_MIN = 230
 SLOT_POPULATED_WHITE_S_MAX = 25
-SLOT_POPULATED_WHITE_MIN = 30      # min pixels matching the above per slot
+SLOT_POPULATED_WHITE_MIN = 30      # 每个插槽满足上述条件的最小像素数
 
 
-def is_card_sold(scene_bgr, region=SOLD_STAMP_REGION) -> bool:
-    """True if the top result card shows the yellow SOLD stamp."""
+def is_card_sold(scene_bgr: np.ndarray,
+                  region: tuple = SOLD_STAMP_REGION) -> bool:
+    """如果顶部结果卡片显示黄色「已售」印章则返回 True。"""
     x1, y1, x2, y2 = region
     crop = scene_bgr[y1:y2, x1:x2]
     if crop.size == 0:
@@ -248,7 +254,7 @@ def is_card_sold(scene_bgr, region=SOLD_STAMP_REGION) -> bool:
     return int(cv2.countNonZero(mask)) > 800
 
 
-SOLD_STAMP_REGIONS = (
+SOLD_STAMP_REGIONS: tuple[tuple, ...] = (
     SOLD_STAMP_REGION,
     (90, 387, 300, 497),
     (90, 589, 300, 699),
@@ -256,15 +262,15 @@ SOLD_STAMP_REGIONS = (
 )
 
 
-def slot_states(scene_bgr) -> tuple:
-    """Per-slot (sold, populated) flags for the four result slots."""
+def slot_states(scene_bgr: np.ndarray) -> tuple:
+    """四个结果插槽的每个（已售，有卡片）状态。"""
     hsv = cv2.cvtColor(scene_bgr, cv2.COLOR_BGR2HSV)
     sold_mask = cv2.inRange(hsv,
                             np.array(SOLD_HSV_LOWER, np.uint8),
                             np.array(SOLD_HSV_UPPER, np.uint8))
     sat = hsv[:, :, 1]
     val = hsv[:, :, 2]
-    out = []
+    out: list[tuple[bool, bool]] = []
     for (x1, y1, x2, y2) in SOLD_STAMP_REGIONS:
         sold = int(cv2.countNonZero(sold_mask[y1:y2, x1:x2])) > 800
         white = ((val[y1:y2, x1:x2] >= SLOT_POPULATED_WHITE_V_MIN)
@@ -274,13 +280,13 @@ def slot_states(scene_bgr) -> tuple:
     return tuple(out)
 
 
-def sold_slots(scene_bgr) -> tuple:
-    """Per-slot SOLD flags for the four result slots."""
+def sold_slots(scene_bgr: np.ndarray) -> tuple:
+    """四个结果插槽的每个「已售」标志。"""
     return tuple(sold for sold, _populated in slot_states(scene_bgr))
 
 
-def first_buyable_slot(scene_bgr) -> int:
-    """1-indexed first slot that is populated and not sold, or 0 if none."""
+def first_buyable_slot(scene_bgr: np.ndarray) -> int:
+    """返回 1-indexed 的第一个有卡片且未售出的插槽，若无则返回 0。"""
     for i, (sold, populated) in enumerate(slot_states(scene_bgr), start=1):
         if populated and not sold:
             return i

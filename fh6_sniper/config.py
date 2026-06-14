@@ -1,4 +1,4 @@
-"""Configuration dataclass and JSON load/save."""
+"""配置数据类和 JSON 加载/保存。"""
 from __future__ import annotations
 import json
 from dataclasses import dataclass, asdict
@@ -62,7 +62,7 @@ class Config:
     win32_api_input: bool = False
 
     def effective_lime_bounds(self) -> tuple:
-        """Return the (lower, upper) HSV bounds to use right now."""
+        """返回当前应使用的 HSV（下限，上限）范围。"""
         if self.hdr_mode:
             return self.hdr_lime_hsv_lower, self.hdr_lime_hsv_upper
         return self.lime_hsv_lower, self.lime_hsv_upper
@@ -74,7 +74,8 @@ _TUPLE_FIELDS = {
 }
 
 
-def load_config(path=DEFAULT_CONFIG_PATH) -> Config:
+def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> Config:
+    """从 JSON 文件加载配置；若文件不存在则创建默认配置并返回。"""
     path = Path(path)
     if not path.exists():
         cfg = Config()
@@ -97,7 +98,8 @@ def load_config(path=DEFAULT_CONFIG_PATH) -> Config:
     return cfg
 
 
-def save_config(cfg: Config, path=DEFAULT_CONFIG_PATH) -> None:
+def save_config(cfg: Config, path: str | Path = DEFAULT_CONFIG_PATH) -> None:
+    """将配置保存为格式化的 JSON 文件。保留所有额外属性。"""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     data = asdict(cfg)

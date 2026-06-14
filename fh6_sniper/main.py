@@ -1,4 +1,4 @@
-"""Entry point: wires config, templates, sniper, overlay, and hotkeys."""
+"""入口点：连接配置、模板、狙击、覆盖层和热键。"""
 from __future__ import annotations
 import json
 import logging
@@ -7,15 +7,14 @@ import threading
 from dataclasses import asdict
 from pynput import keyboard
 from . import capture, notifier, paths, vision
-from .config import load_config, save_config
+from .config import Config, load_config, save_config
 from .overlay import Overlay
 from .sniper import GameIO, Sniper
 
 
-def _log_config(cfg) -> None:
-    """Dump the loaded config to the log as a single JSON line.
-    Helps when triaging user-submitted logs - we can see what the bot
-    was configured with at session start."""
+def _log_config(cfg: Config) -> None:
+    """将加载的配置以 JSON 单行记录到日志。
+    有助于排查用户提交的日志——可以看到会话开始时机器人的配置。"""
     body = asdict(cfg)
     declared = set(cfg.__dataclass_fields__)
     for key, value in cfg.__dict__.items():           # include extras
@@ -46,7 +45,7 @@ def _setup_logging():
 
 def main() -> None:
     log_path = _setup_logging()
-    logging.getLogger("fh6").info("FH6 Sniper starting (log: %s)", log_path)
+    logging.getLogger("fh6").info("FH6 狙击工具启动（日志: %s）", log_path)
     cfg = load_config(paths.app_dir() / "config.json")
     _log_config(cfg)
     templates = vision.load_templates(
@@ -56,11 +55,11 @@ def main() -> None:
     overlay = Overlay(
         hide_from_capture=not getattr(cfg, "overlay_capturable", False))
 
-    state = {
+    state: dict = {
         "sniper": None,
         "thread": None,
         # display-side running totals - accumulate across stop/start cycles
-        # so the overlay's BOUGHT / SEARCHES / FAILS don't reset every run.
+        # so the overlay's stats don't reset every run.
         "display": {"searches": 0, "bought": 0, "fails": 0},
         # last raw values seen from the current Sniper - used to compute
         # deltas (new Sniper instances start their internal counters at 0).
@@ -68,11 +67,11 @@ def main() -> None:
     }
     purchase_log = paths.app_dir() / cfg.log_path
 
-    def on_purchase(loop_seconds, total):
+    def on_purchase(loop_seconds: float, total: int) -> None:
         notifier.log_purchase(purchase_log, "bought", loop_seconds, total)
         notifier.notify_success(total, cfg.notify_sound, cfg.notify_toast)
 
-    def on_stats(searches, bought, fails):
+    def on_stats(searches: int, bought: int, fails: int) -> None:
         last_s, last_b, last_f = state["last_bot_stats"]
         d = state["display"]
         d["searches"] += max(0, searches - last_s)
@@ -81,7 +80,7 @@ def main() -> None:
         state["last_bot_stats"] = (searches, bought, fails)
         overlay.set_stats(d["searches"], d["bought"], d["fails"])
 
-    def start():
+    def start() -> None:
         if state["thread"] and state["thread"].is_alive():
             return
         capture.focus_window(cfg.window_title)
@@ -91,42 +90,42 @@ def main() -> None:
                         on_status=overlay.set_status,
                         on_stats=on_stats)
 
-        def _run_safe():
+        def _run_safe() -> None:
             try:
                 sniper.run()
-            except Exception:
+            except Exception:  # noqa: BLE001  捕获所有异常以防止线程无声退出
                 logging.getLogger("fh6.main").exception(
-                    "sniper thread crashed")
+                    "sniper 线程崩溃")
                 try:
-                    overlay.set_status("Crashed: see sniper.log")
-                except Exception:
+                    overlay.set_status("崩溃：请查看 sniper.log")
+                except Exception:  # noqa: BLE001  覆盖层可能已销毁
                     pass
 
         thread = threading.Thread(target=_run_safe, daemon=True)
         state["sniper"], state["thread"] = sniper, thread
         thread.start()
 
-    def stop():
+    def stop() -> None:
         if state["sniper"]:
             state["sniper"].request_stop()
 
-    def toggle():
+    def toggle() -> None:
         if state["thread"] and state["thread"].is_alive():
             stop()
         else:
             start()
 
-    hotkeys_ref = {"listener": None}
+    hotkeys_ref: dict = {"listener": None}
 
-    def _bind_hotkeys(start_stop, panic):
+    def _bind_hotkeys(start_stop: str, panic: str) -> None:
         listener = keyboard.GlobalHotKeys({start_stop: toggle, panic: stop})
         listener.start()
         hotkeys_ref["listener"] = listener
 
     _bind_hotkeys(cfg.hotkey_start_stop, cfg.hotkey_panic)
 
-    def apply_settings(values):
-        """Apply settings dict to cfg in-place; persist; reload as needed."""
+    def apply_settings(values: dict) -> str | None:
+        """将设置字典原地应用到 cfg；持久化；按需重新加载。返回错误消息或 None。"""
         log = logging.getLogger("fh6.settings")
         prev_bg = cfg.moving_background
         prev_start = cfg.hotkey_start_stop
@@ -145,9 +144,9 @@ def main() -> None:
             log.info("overlay capturable -> %s", cfg.overlay_capturable)
         try:
             save_config(cfg, paths.app_dir() / "config.json")
-        except Exception as exc:
+        except (OSError, PermissionError) as exc:
             log.exception("save_config failed")
-            return f"Could not save config: {exc}"
+            return f"无法保存配置: {exc}"
         if cfg.moving_background != prev_bg:
             try:
                 io.templates = vision.load_templates(
@@ -155,9 +154,9 @@ def main() -> None:
                     moving_background=cfg.moving_background)
                 log.info("templates reloaded (moving_background=%s)",
                          cfg.moving_background)
-            except Exception as exc:
+            except (OSError, Exception) as exc:
                 log.exception("template reload failed")
-                return f"Saved, but template reload failed: {exc}"
+                return f"已保存，但模板重新加载失败: {exc}"
         if (cfg.hotkey_start_stop != prev_start
                 or cfg.hotkey_panic != prev_panic):
             try:
@@ -166,15 +165,15 @@ def main() -> None:
                 _bind_hotkeys(cfg.hotkey_start_stop, cfg.hotkey_panic)
                 log.info("hotkeys rebound (%s / %s)",
                          cfg.hotkey_start_stop, cfg.hotkey_panic)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001  pynput 可能失败
                 log.exception("hotkey rebind failed")
-                return f"Saved, but hotkey rebind failed: {exc}"
+                return f"已保存，但热键重新绑定失败: {exc}"
         return None
 
     overlay.bind_settings(cfg)
     overlay.on_save(apply_settings)
     overlay.on_toggle(toggle)
-    overlay.set_status("Idle")
+    overlay.set_status("空闲")
     try:
         overlay.run()
     finally:

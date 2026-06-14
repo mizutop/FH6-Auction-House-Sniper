@@ -1,4 +1,4 @@
-"""Keyboard input with randomized timing."""
+"""带随机化时序的键盘输入。"""
 from __future__ import annotations
 import logging
 import random
@@ -12,15 +12,15 @@ log = logging.getLogger("fh6.actions")
 _DEFAULT_KEYBOARD = Controller()
 
 
-def get_hwnd(window_title="Forza Horizon 6"):
-    """Get the window handle for the Forza Horizon 6 game window."""
+def get_hwnd(window_title: str = "Forza Horizon 6") -> int:
+    """获取 Forza Horizon 6 游戏窗口的窗口句柄。"""
     hwnd = win32gui.FindWindow(None, window_title)
     if not hwnd:
-        log.warning("Forza Horizon 6 window not found")
+        log.warning("未找到 Forza Horizon 6 窗口")
     return hwnd
 
 
-KEY_MAP = {
+KEY_MAP: dict[str, Key | str] = {
     "enter": Key.enter,
     "esc": Key.esc,
     "up": Key.up,
@@ -28,7 +28,7 @@ KEY_MAP = {
     "y": "y",
 }
 
-VK_CODES = {
+VK_CODES: dict[str, int] = {
     "enter": 0x0D,
     "esc": 0x1B,
     "up": 0x26,
@@ -37,12 +37,12 @@ VK_CODES = {
 }
 
 
-def _rand_seconds(ms_range) -> float:
+def _rand_seconds(ms_range: tuple[float, float]) -> float:
     return random.uniform(ms_range[0], ms_range[1]) / 1000.0
 
 
-def press_key(name, key_hold_ms, between_keys_ms,
-              use_win32=False, keyboard=_DEFAULT_KEYBOARD,
+def press_key(name: str, key_hold_ms: tuple, between_keys_ms: tuple,
+              use_win32: bool = False, keyboard=_DEFAULT_KEYBOARD,
               sleep=time.sleep) -> None:
     if use_win32:
         press_key_vk(name, key_hold_ms, between_keys_ms, sleep)
@@ -50,9 +50,9 @@ def press_key(name, key_hold_ms, between_keys_ms,
         press_key_fg(name, key_hold_ms, between_keys_ms, keyboard, sleep)
 
 
-def press_key_fg(name, key_hold_ms, between_keys_ms,
+def press_key_fg(name: str, key_hold_ms: tuple, between_keys_ms: tuple,
                  keyboard=_DEFAULT_KEYBOARD, sleep=time.sleep) -> None:
-    """Press one key with a randomized hold and post-press gap."""
+    """按下单个按键，带随机化的保持时间和按下后间隔。"""
     key = KEY_MAP[name]
     keyboard.press(key)
     sleep(_rand_seconds(key_hold_ms))
@@ -60,9 +60,9 @@ def press_key_fg(name, key_hold_ms, between_keys_ms,
     sleep(_rand_seconds(between_keys_ms))
 
 
-def press_key_vk(name, key_hold_ms, between_keys_ms,
+def press_key_vk(name: str, key_hold_ms: tuple, between_keys_ms: tuple,
                  sleep=time.sleep) -> None:
-    """Press one key with a randomized hold and post-press gap using win32 API."""
+    """使用 Win32 API 按下单个按键，带随机化的保持时间和按下后间隔。"""
     hwnd = get_hwnd()
     if not hwnd:
         return
@@ -73,10 +73,10 @@ def press_key_vk(name, key_hold_ms, between_keys_ms,
     sleep(_rand_seconds(between_keys_ms))
 
 
-def tap_key(name, times, key_hold_ms, between_keys_ms,
-            use_win32=False, keyboard=_DEFAULT_KEYBOARD,
+def tap_key(name: str, times: int, key_hold_ms: tuple, between_keys_ms: tuple,
+            use_win32: bool = False, keyboard=_DEFAULT_KEYBOARD,
             sleep=time.sleep) -> None:
-    """Press a key `times` times."""
+    """将按键 `name` 按下 `times` 次。"""
     for _ in range(times):
         press_key(name, key_hold_ms, between_keys_ms,
                   use_win32, keyboard, sleep)
