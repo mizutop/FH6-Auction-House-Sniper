@@ -1,0 +1,60 @@
+{
+  "window_title": "Forza Horizon 6",
+  "resolution": [
+    1920,
+    1080
+  ],
+  "match_threshold": 0.8,
+  "lime_hsv_lower": [
+    25,
+    110,
+    110
+  ],
+  "lime_hsv_upper": [
+    55,
+    255,
+    255
+  ],
+  "hdr_lime_hsv_lower": [
+    18,
+    110,
+    110
+  ],
+  "hdr_lime_hsv_upper": [
+    60,
+    255,
+    255
+  ],
+  "hdr_mode": false,
+  "key_hold_ms": [
+    20,
+    45
+  ],
+  "between_keys_ms": [
+    20,
+    55
+  ],
+  "poll_interval_ms": [
+    40,
+    90
+  ],
+  "buyout_select_delay_ms": 0,
+  "moving_background": true,
+  "timeout_results_s": 25.0,
+  "timeout_outcome_s": 25.0,
+  "timeout_claim_s": 20.0,
+  "timeout_generic_s": 10.0,
+  "loop_pace_s": 0.15,
+  "auto_stop_enabled": true,
+  "max_cars": 1,
+  "max_minutes": 180.0,
+  "collect_after_buyout": true,
+  "notify_sound": true,
+  "notify_toast": true,
+  "overlay_capturable": false,
+  "log_path": "logs/purchases.csv",
+  "template_dir": "templates",
+  "hotkey_start_stop": "<f8>",
+  "hotkey_panic": "<f9>",
+  "win32_api_input": false
+}

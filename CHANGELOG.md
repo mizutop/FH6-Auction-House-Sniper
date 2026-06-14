@@ -1,55 +1,55 @@
-# Changelog
+# 更新日志
 
-Newest changes first. Each section header is the release date.
+最新的变更排在最前。每个章节标题是发布日期。
 
 ## v1.2.0 - 2026-05-28
 
-### Run the bot while doing something else (contributed by @LennardDenby)
-New **Win32 API input** toggle in Settings. With it on, the bot keeps buying cars even when FH6 isn't your active window. Alt-tab to a browser, watch YouTube, whatever. FH6 still needs to be running and not minimised. Off by default.
+### 在后台运行狙击（由 @LennardDenby 贡献）
+新的 **Win32 API 输入** 开关（在设置面板中）。开启后，即使 FH6 不是活动窗口，狙击也能继续购买车辆。可以切换到浏览器看 YouTube 或其他操作。FH6 仍需运行且不能最小化。默认关闭。
 
-### Fewer self-changing settings
-If you noticed your Moving Background toggle resetting to a different value on its own, that's fixed. The bot now double-checks before changing it.
+### 减少设置自动变化
+如果你发现「移动背景」开关会自动复位到不同的值，这个版本已修复。狙击现在会在更改前双重确认。
 
 ## v1.1.3 - 2026-05-28
 
-### Fix: bot was wrongly skipping cars as "all sold"
-The lime "Auction Details" banner renders a frame or two before FH6 actually draws the car cards underneath it. The bot was checking the slots on that earlier frame, finding nothing rendered yet, and reporting "All listings sold, skipping" - so legitimate cars were being skipped without an attempt. The bot now waits for at least one card body to be visible before deciding what's buyable. This also stops the auto-toggle from ping-ponging the moving-background flag, since the buy-out dialog rendering race was a downstream symptom of the same root cause.
+### 修复：错误地将车辆跳过为"已售罄"
+青绿色「拍卖详情」横幅比 FH6 实际绘制下方的车辆卡片帧早 1-2 帧出现。狙击在该较早帧上检查插槽时，发现没有任何渲染内容，误报「所有列表已售罄，跳过」——因此合法的车辆被跳过了。狙击现在会等待至少一张卡片主体可见后，才决定哪些可以购买。这也修复了移动背景标志来回切换的问题，因为购买确认对话框的渲染竞争是同一根因的后续表现。
 
 ## v1.1.2 - 2026-05-27
 
-### Clearer error when the bot can't see the game
-If the bot starts and can't identify any FH6 menu screens (most often because the game language isn't English), the status now reads **"Set game language to English"** instead of the vague "could not recover".
+### 无法看到游戏时给出更清晰的错误提示
+如果狙击启动后无法识别任何 FH6 菜单画面（最常见的原因是游戏语言不是英文），状态现在显示为 **"请将游戏语言设置为英文"**，而不是模糊的「无法恢复」。
 
-### Better diagnostic logs
-The full config is now logged at session start, and any setting changes made from the Settings tab get logged with old → new values. Useful when sharing `sniper.log` for troubleshooting.
+### 更好的诊断日志
+整个配置现在会在会话开始时记录到日志中，设置选项卡中的任何更改都会记录旧值和新的值。在分享 `sniper.log` 进行故障排查时非常有用。
 
 ## v1.1.1 - 2026-05-27
 
-### Sold-listing detection fix
-The bot was occasionally still trying to buy listings that had just sold - it would land on the View Seller / View Highest Bidder menu before backing out, wasting a cycle. Root cause: with moving background on, the bright FH6 menu scene showing through empty slots was being mistaken for a card. Detection now looks for the pure-white card UI body specifically, which the game's background scene never produces. The bot will correctly skip sold listings instead of stumbling into the wrong menu.
+### 已售列表检测修复
+狙击偶尔仍会尝试购买刚售出的列表——它会进入「查看卖家 / 查看最高出价者」菜单然后退出，浪费一个循环。根本原因：开启移动背景时，透过空插槽显示的明亮 FH6 菜单场景被误认为是卡片。检测现在专门寻找纯白色的卡片 UI 主体，游戏背景场景永远不会产生这种纯白。狙击现在会正确跳过已售列表，而不会误入错误菜单。
 
-### Auto-fix for wrong Moving background flag
-If your in-game **Moving background** setting doesn't match the **Moving background mode** toggle in the bot's Settings, the bot will now spot the mismatch on the first buyout attempt (about a second in), flip its own toggle to match, save the new value, and carry on. Costs one missed sale, then the bot runs as if the flag had been correct from the start.
+### 自动修复错误的移动背景标志
+如果你的游戏内「移动背景」设置与狙击的设置中「移动背景模式」开关不匹配，狙击现在会在第一次购买尝试时（大约 1 秒内）发现不匹配，自动翻转自己的开关以匹配，保存新值，然后继续运行。代价是错过一次出售，之后狙击就像标志从一开始就正确一样运行。
 
 ## v1.1.0 - 2026-05-26
 
-### Settings panel
-New **Settings** tab in the overlay. Edit match sensitivity, loop speed, auto-stop limits, notifications, hotkeys, HDR mode, moving background, and overlay visibility in screenshots / recordings. Saves and applies live.
+### 设置面板
+覆盖层中新增 **设置** 选项卡。可以编辑匹配灵敏度、循环速度、自动停止限制、通知、热键、HDR 模式、移动背景以及覆盖层在截图/录制中的可见性。实时保存并应用。
 
-### Resolution & monitor support
-- 1080p, 1440p, 4K: all work.
-- Ultrawide / 16:10 / 4:3: run FH6 windowed at 1920×1080. Black bars get cropped automatically.
+### 分辨率与显示器支持
+- 1080p、1440p、4K：全部支持。
+- 超宽屏 / 16:10 / 4:3：以窗口模式运行 FH6 使用 1920×1080。黑条会自动裁剪。
 
 ### HDR
-HDR was shifting FH6's lime UI toward yellow and breaking color detection. Fixed. Extra **HDR mode** toggle in Settings for displays that shift even more.
+HDR 曾导致 FH6 的青绿色 UI 偏向黄色，破坏颜色检测。已修复。新增 **HDR 模式** 开关，适用于显示偏移更严重的设备。
 
-### Slow-load fix
-Was reporting "no cars" when the Auction House just hadn't finished loading yet. Now recognizes the loading screen and waits.
+### 慢加载修复
+曾经在拍卖行尚未完成加载时报告「没有车辆」。现在能识别加载画面并等待。
 
-### Polish
-- Tabbed Status / Settings layout
-- Collapsible Settings sections, scrolls if your screen is short
-- Faster captures at high resolutions
+### 打磨
+- 选项卡式状态/设置布局
+- 可折叠的设置分区，屏幕较小时可滚动
+- 高分辨率下更快的截图捕获
 
-### Logs
-Cleaner state names, including the new loading state.
+### 日志
+更清晰的状态名称，包括新的加载状态。
